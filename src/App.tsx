@@ -211,8 +211,8 @@ const App: React.FC = () => {
     addHistory('All files cleared.')
   }
 
-  // Fake generator – পরে এখানে OpenAI / Gemini API কল বসাবেন
-  const fakeGenerateMetadata = async (
+    // ডেমো জেনারেটর – API না থাকলে / fallback হিসেবে
+  const generateDemoMetadata = async (
     item: FileItem,
     index: number,
   ): Promise<Partial<FileItem>> => {
@@ -252,18 +252,143 @@ const App: React.FC = () => {
     }
   }
 
+  // OpenAI ব্যবহার করে রিয়েল মেটাডাটা জেনারেটর
+  const generateMetadataWithOpenAI = async (
+    item: FileItem,
+  ): Promise<Partial<FileItem>> => {
+    if (!savedApiKey) {
+      // নিরাপত্তার জন্য – key না থাকলে fallback
+      return generateDemoMetadata(item, 0)
+    }
+
+    const apiUrl = 'https://api.openai.com/v1/chat/completions'
+
+    const prompt = `
+You are an expert stock content metadata generator.
+Generate high-quality metadata for a digital asset that will be uploaded to stock websites.
+
+File name: ${item.file.name}
+File type: ${item.file.type || 'unknown'}
+Target platform: ${platform}
+Mode: ${mode === 'metadata' ? 'metadata for title, keywords, description' : 'prompt focused'}
+
+Requirements:
+- Language: English.
+- Title: maximum ${titleLength} characters, descriptive, no quotes.
+- Keywords: between 10 and ${keywordsCount} keywords, concept words only (no numbers, no symbols).
+- Description: maximum ${descriptionLength} characters, natural sentence.
+
+Return ONLY a JSON object with this exact shape:
+{
+  "title": "string",
+  "keywords": ["word1","word2", "..."],
+  "description": "string"
+}
+Do not add any extra text outside the JSON.
+    `.trim()
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${savedApiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4.1-mini',
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You create concise, commercially optimized metadata for stock content libraries. You MUST respond as a valid JSON object only.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      }),
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`OpenAI error: ${response.status} ${text}`)
+    }
+
+    const data = await response.json()
+    const content = data?.choices?.[0]?.message?.content
+    if (!content) {
+      throw new Error('Empty response from OpenAI')
+    }
+
+    let parsed: any
+    try {
+      parsed = typeof content === 'string' ? JSON.parse(content) : content
+    } catch {
+      throw new Error('Failed to parse JSON from OpenAI response')
+    }
+
+    const rawTitle = String(parsed.title || '')
+    const rawKeywords = Array.isArray(parsed.keywords)
+      ? parsed.keywords.join(', ')
+      : String(parsed.keywords || '')
+    const rawDescription = String(parsed.description || '')
+
+    // Title ক্লিনিং + প্রিফিক্স/সাফিক্স
+    let title = normalizeTitle(rawTitle).slice(0, titleLength)
+    if (prefixEnabled && prefixText.trim()) {
+      title = `${prefixText.trim()} ${title}`.trim()
+    }
+    if (suffixEnabled && suffixText.trim()) {
+      title = `${title} ${suffixText.trim()}`.trim()
+    }
+
+    // Keyword গুলো এক শব্দে কনভার্ট + ডুপ্লিকেট রিমুভ + limit
+    const keywords = autoCleanKeywords(
+      rawKeywords,
+      autoRemoveDupKeywords,
+      bulkKeywordEnabled ? bulkKeywordText : '',
+    )
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, keywordsCount)
+      .join(', ')
+
+    const description = rawDescription.slice(0, descriptionLength)
+
+    return {
+      title,
+      keywords,
+      description,
+      status: 'success',
+    }
+  }
+
+  // একেকটা ফাইলের জন্য জেনারেশন হ্যান্ডলার
   const generateForItem = async (id: string, index: number) => {
     setFiles((prev) =>
       prev.map((f) => (f.id === id ? { ...f, status: 'generating', error: '' } : f)),
     )
+
     try {
       const current = files.find((f) => f.id === id)
       if (!current) return
-      const partial = await fakeGenerateMetadata(current, index)
+
+      // যদি API key থাকে → OpenAI, না থাকলে ডেমো
+      const partial = savedApiKey
+        ? await generateMetadataWithOpenAI(current)
+        : await generateDemoMetadata(current, index)
+
       setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
       setGeneratedCount((c) => c + 1)
-    } catch (err) {
+    } catch (err: any) {
       console.error(err)
+      addHistory(
+        `Generation failed for ${id}: ${
+          err && err.message ? err.message : 'Unknown error'
+        }`,
+      )
       setFiles((prev) =>
         prev.map((f) =>
           f.id === id ? { ...f, status: 'failed', error: 'Generation failed' } : f,
@@ -277,12 +402,13 @@ const App: React.FC = () => {
     if (!savedApiKey) {
       if (
         !window.confirm(
-          'No API key saved. Do you still want to generate using demo logic?',
+          'No OpenAI API key saved. Do you still want to generate using demo logic only?',
         )
       ) {
         return
       }
     }
+
     setIsGeneratingAll(true)
     setGeneratedCount(0)
     setFailedCount(0)
