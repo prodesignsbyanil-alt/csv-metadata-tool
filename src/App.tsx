@@ -54,15 +54,13 @@ function autoCleanKeywords(
   autoRemoveDupKeywords: boolean,
   bulkKeywordExtra: string,
 ): string {
-  // ইউজারের extra bulk keyword–ও add করা হচ্ছে
   const base = raw + (bulkKeywordExtra ? ',' + bulkKeywordExtra : '')
 
   let tokens = base
     .toLowerCase()
-    .split(/[,;\n]/) // কমা / সেমিকোলন / নিউলাইন দিয়ে ভাগ
+    .split(/[,;\n]/)
     .map((t) => t.trim())
     .filter(Boolean)
-    // এখানে প্রতিটা keyword থেকে শুধু **প্রথম শব্দ** রাখা হচ্ছে
     .map((t) => t.split(/\s+/)[0])
     .filter(Boolean)
 
@@ -78,7 +76,6 @@ function autoCleanKeywords(
     tokens = unique
   }
 
-  // ফাইনাল আউটপুট: "word1, word2, word3" – সব এক শব্দের হবে
   return tokens.join(', ')
 }
 
@@ -156,7 +153,7 @@ const App: React.FC = () => {
   // File upload
   const handleFilesAdded = (fileList: FileList | null) => {
     if (!fileList) return
-    const arr = Array.from(fileList).slice(0, 1000 - files.length) // Max 1000
+    const arr = Array.from(fileList).slice(0, 1000 - files.length)
 
     if (arr.length === 0) return
 
@@ -245,7 +242,6 @@ const App: React.FC = () => {
     const descBase = `High quality ${platform} friendly stock asset generated from file ${baseName}. Perfect for print-on-demand, templates, mockups, stickers and professional use.`
     const description = descBase.slice(0, descriptionLength)
 
-    // একটু ডিলে সিমুলেট করতে চাইলে:
     await new Promise((res) => setTimeout(res, 200 + index * 5))
 
     return {
@@ -309,44 +305,60 @@ const App: React.FC = () => {
     void generateForItem(id, index)
   }
 
-  // CSV Export (সিম্পল স্টাব)
+  // ✅ ZIP Export – AI.csv, EPS.csv, SVG.csv, General.csv
   const handleExportCsv = async () => {
     if (!files.length) {
       alert('No files to export.')
       return
     }
 
-    const header = ['filename', 'title', 'keywords', 'description', 'platform']
-    const rows = files.map((f) => [
-      f.file.name,
-      f.title,
-      f.keywords,
-      f.description,
-      platform,
-    ])
+    const buildCsv = (items: FileItem[]): string => {
+      const header = ['filename', 'title', 'keywords', 'description', 'platform']
 
-    const csvContent =
-      [header, ...rows]
-        .map((r) =>
-          r
-            .map((v) =>
-              `"${String(v || '')
-                .replace(/"/g, '""')
-                .replace(/\r?\n/g, ' ')}"`,
-            )
-            .join(','),
-        )
-        .join('\r\n') + '\r\n'
+      const rows = items.map((f) => [
+        f.file.name,
+        f.title,
+        f.keywords,
+        f.description,
+        platform,
+      ])
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'general.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+      const lines = [header, ...rows].map((r) =>
+        r
+          .map((v) =>
+            `"${String(v || '')
+              .replace(/"/g, '""')
+              .replace(/\r?\n/g, ' ')}"`,
+          )
+          .join(','),
+      )
 
-    addHistory('CSV exported (general.csv).')
+      return lines.join('\r\n') + '\r\n'
+    }
+
+    const aiFiles = files.filter((f) => /\.ai$/i.test(f.file.name))
+    const epsFiles = files.filter((f) => /\.eps$/i.test(f.file.name))
+    const svgFiles = files.filter((f) => /\.svg$/i.test(f.file.name))
+    const otherFiles = files.filter(
+      (f) =>
+        !/\.ai$/i.test(f.file.name) &&
+        !/\.eps$/i.test(f.file.name) &&
+        !/\.svg$/i.test(f.file.name),
+    )
+
+    const zip = new JSZip()
+
+    zip.file('AI.csv', buildCsv(aiFiles))
+    zip.file('EPS.csv', buildCsv(epsFiles))
+    zip.file('SVG.csv', buildCsv(svgFiles))
+
+    const generalSource = otherFiles.length ? otherFiles : files
+    zip.file('General.csv', buildCsv(generalSource))
+
+    const blob = await zip.generateAsync({ type: 'blob' })
+    saveAs(blob, 'metadata_csv.zip')
+
+    addHistory('CSV exported as metadata_csv.zip (AI, EPS, SVG, General).')
   }
 
   const updateFileField = (
