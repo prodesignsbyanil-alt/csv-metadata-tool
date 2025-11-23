@@ -79,6 +79,24 @@ function autoCleanKeywords(
   return tokens.join(', ')
 }
 
+// ফাইলকে base64 string এ কনভার্ট (Gemini vision এর জন্য)
+async function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result
+      if (typeof result === 'string') {
+        const base64 = result.split(',')[1] || result
+        resolve(base64)
+      } else {
+        reject(new Error('Failed to read file'))
+      }
+    }
+    reader.onerror = () => reject(reader.error || new Error('FileReader error'))
+    reader.readAsDataURL(file)
+  })
+}
+
 const App: React.FC = () => {
   // Login
   const [email, setEmail] = useState('')
@@ -252,7 +270,7 @@ const App: React.FC = () => {
     }
   }
 
-   // ✅ শুধু Gemini 2.0 Flash দিয়ে মেটাডাটা জেনারেটর (JSON robust parsing সহ)
+  // ✅ Gemini 2.0 Flash + image vision + keyword padding
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
@@ -264,6 +282,10 @@ const App: React.FC = () => {
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
       encodeURIComponent(savedApiKey)
 
+    // ফাইলকে base64 বানাচ্ছি যাতে Gemini ইমেজ/ভেক্টর দেখেতে পারে
+    const fileBase64 = await fileToBase64(item.file)
+    const mimeType = item.file.type || 'image/*'
+
     const prompt = `
 You are an expert stock content metadata generator.
 Generate high-quality metadata for a digital asset that will be uploaded to stock websites.
@@ -273,11 +295,13 @@ File type: ${item.file.type || 'unknown'}
 Target platform: ${platform}
 Mode: ${mode === 'metadata' ? 'metadata for title, keywords, description' : 'prompt focused'}
 
+Use BOTH the visual content of the file and the filename to understand the subject, style and composition.
+
 Requirements:
 - Language: English.
-- Title: maximum ${titleLength} characters, descriptive, no quotes.
-- Keywords: between 10 and ${keywordsCount} single-word keywords (no multi-word phrases, no numbers, no symbols).
-- Description: maximum ${descriptionLength} characters, natural sentence.
+- Title: maximum ${titleLength} characters, descriptive, no quotes, relevant to THIS specific file.
+- Keywords: EXACTLY ${keywordsCount} single-word keywords (no multi-word phrases, no numbers, no symbols). All keywords must be directly relevant to this file.
+- Description: maximum ${descriptionLength} characters, natural sentence, accurately describing this file.
 
 Return ONLY a JSON object with this exact shape:
 {
@@ -297,10 +321,17 @@ No explanation. No markdown. No extra text. Only raw JSON.
         contents: [
           {
             role: 'user',
-            parts: [{ text: prompt }],
+            parts: [
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: fileBase64,
+                },
+              },
+              { text: prompt },
+            ],
           },
         ],
-        // নতুন কনফিগ: সরাসরি JSON টাইপ চাই
         generationConfig: {
           responseMimeType: 'application/json',
         },
@@ -314,7 +345,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     const data = await response.json()
 
-    // Gemini কখনো সরাসরি JSON দেয়, কখনো text ফিল্ডে দেয় – দুটোই হ্যান্ডেল করব
+    // Gemini → text extract
     let rawText: string = ''
 
     if (
@@ -330,7 +361,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
           .join(' ')
           .trim() || ''
     } else {
-      // যদি কোন কারণে structure অন্য রকম হয়, পুরো data stringify করে চেষ্টা করব
       rawText = JSON.stringify(data)
     }
 
@@ -338,13 +368,10 @@ No explanation. No markdown. No extra text. Only raw JSON.
       throw new Error('Empty response from Gemini')
     }
 
-    // এখন rawText থেকে পরিষ্কার JSON টেক্সট বের করব
+    // ```json ব্লক / বাড়তি টেক্সট পরিষ্কার করা
     let jsonText = rawText.trim()
-
-    // ```json ... ``` ব্লক থাকলে সেগুলো কেটে ফেলি
     jsonText = jsonText.replace(/```json/gi, '').replace(/```/g, '').trim()
 
-    // প্রথম { থেকে শেষ } পর্যন্ত স্লাইস নিই
     const firstBrace = jsonText.indexOf('{')
     const lastBrace = jsonText.lastIndexOf('}')
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -366,6 +393,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
       : String(parsed.keywords || '')
     const rawDescription = String(parsed.description || '')
 
+    // Title ক্লিন + প্রিফিক্স/সাফিক্স
     let title = normalizeTitle(rawTitle).slice(0, titleLength)
     if (prefixEnabled && prefixText.trim()) {
       title = `${prefixText.trim()} ${title}`.trim()
@@ -374,7 +402,8 @@ No explanation. No markdown. No extra text. Only raw JSON.
       title = `${title} ${suffixText.trim()}`.trim()
     }
 
-    const keywords = autoCleanKeywords(
+    // Keyword ক্লিন → এক-শব্দ → padding করে EXACT count করা
+    let keywordTokens = autoCleanKeywords(
       rawKeywords,
       autoRemoveDupKeywords,
       bulkKeywordEnabled ? bulkKeywordText : '',
@@ -382,8 +411,47 @@ No explanation. No markdown. No extra text. Only raw JSON.
       .split(',')
       .map((t) => t.trim())
       .filter(Boolean)
-      .slice(0, keywordsCount)
-      .join(', ')
+
+    const targetCount = keywordsCount
+
+    if (keywordTokens.length < targetCount) {
+      const fillerPool = [
+        'vector',
+        'illustration',
+        'design',
+        'art',
+        'graphic',
+        'symbol',
+        'icon',
+        'minimal',
+        'modern',
+        'abstract',
+        'background',
+        'template',
+        'creative',
+        'digital',
+        'silhouette',
+        'pattern',
+        'shape',
+        'line',
+        'curve',
+        'poster',
+        'print',
+        'stock',
+        'commercial',
+        'concept',
+      ]
+
+      for (const word of fillerPool) {
+        if (keywordTokens.length >= targetCount) break
+        if (!keywordTokens.includes(word)) {
+          keywordTokens.push(word)
+        }
+      }
+    }
+
+    keywordTokens = keywordTokens.slice(0, targetCount)
+    const keywords = keywordTokens.join(', ')
 
     const description = rawDescription.slice(0, descriptionLength)
 
@@ -394,7 +462,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       status: 'success',
     }
   }
-
 
   // প্রতিটি ফাইলের জন্য জেনারেশন
   const generateForItem = async (id: string, index: number) => {
