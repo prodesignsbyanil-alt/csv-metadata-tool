@@ -252,7 +252,7 @@ const App: React.FC = () => {
     }
   }
 
-  // ✅ শুধু Gemini 2.0 Flash দিয়ে মেটাডাটা জেনারেটর
+   // ✅ শুধু Gemini 2.0 Flash দিয়ে মেটাডাটা জেনারেটর (JSON robust parsing সহ)
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
@@ -285,7 +285,7 @@ Return ONLY a JSON object with this exact shape:
   "keywords": ["word1","word2", "..."],
   "description": "string"
 }
-Do not add any explanation. Only raw JSON.
+No explanation. No markdown. No extra text. Only raw JSON.
     `.trim()
 
     const response = await fetch(apiUrl, {
@@ -300,6 +300,10 @@ Do not add any explanation. Only raw JSON.
             parts: [{ text: prompt }],
           },
         ],
+        // নতুন কনফিগ: সরাসরি JSON টাইপ চাই
+        generationConfig: {
+          responseMimeType: 'application/json',
+        },
       }),
     })
 
@@ -309,20 +313,50 @@ Do not add any explanation. Only raw JSON.
     }
 
     const data = await response.json()
-    const text =
-      data?.candidates?.[0]?.content?.parts
-        ?.map((p: any) => p.text || '')
-        .join(' ')
-        .trim() || ''
 
-    if (!text) {
+    // Gemini কখনো সরাসরি JSON দেয়, কখনো text ফিল্ডে দেয় – দুটোই হ্যান্ডেল করব
+    let rawText: string = ''
+
+    if (
+      data &&
+      data.candidates &&
+      data.candidates[0] &&
+      data.candidates[0].content &&
+      Array.isArray(data.candidates[0].content.parts)
+    ) {
+      rawText =
+        data.candidates[0].content.parts
+          .map((p: any) => (typeof p.text === 'string' ? p.text : ''))
+          .join(' ')
+          .trim() || ''
+    } else {
+      // যদি কোন কারণে structure অন্য রকম হয়, পুরো data stringify করে চেষ্টা করব
+      rawText = JSON.stringify(data)
+    }
+
+    if (!rawText) {
       throw new Error('Empty response from Gemini')
+    }
+
+    // এখন rawText থেকে পরিষ্কার JSON টেক্সট বের করব
+    let jsonText = rawText.trim()
+
+    // ```json ... ``` ব্লক থাকলে সেগুলো কেটে ফেলি
+    jsonText = jsonText.replace(/```json/gi, '').replace(/```/g, '').trim()
+
+    // প্রথম { থেকে শেষ } পর্যন্ত স্লাইস নিই
+    const firstBrace = jsonText.indexOf('{')
+    const lastBrace = jsonText.lastIndexOf('}')
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      jsonText = jsonText.slice(firstBrace, lastBrace + 1)
     }
 
     let parsed: any
     try {
-      parsed = JSON.parse(text)
-    } catch {
+      parsed = JSON.parse(jsonText)
+    } catch (e) {
+      console.error('Gemini rawText:', rawText)
+      console.error('Gemini jsonText used for parse:', jsonText)
       throw new Error('Failed to parse JSON from Gemini response')
     }
 
@@ -360,6 +394,7 @@ Do not add any explanation. Only raw JSON.
       status: 'success',
     }
   }
+
 
   // প্রতিটি ফাইলের জন্য জেনারেশন
   const generateForItem = async (id: string, index: number) => {
