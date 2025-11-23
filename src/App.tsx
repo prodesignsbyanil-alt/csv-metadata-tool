@@ -47,7 +47,7 @@ function normalizeTitle(raw: string): string {
  * Keyword cleaner
  * - Bulk keyword extra যোগ করে
  * - প্রতিটি keyword থেকে শুধু প্রথম শব্দ নেয় (one-word keywords)
- * - ডুপ্লিকেট থাকলে চাইলে remove করে
+ * - ডুপ্লিকেট থাকলে remove করে
  */
 function autoCleanKeywords(
   raw: string,
@@ -84,7 +84,7 @@ const App: React.FC = () => {
   const [email, setEmail] = useState('')
   const [isLoggedIn, setIsLoggedIn] = useState(false)
 
-  // API key
+  // Gemini API key
   const [apiKey, setApiKey] = useState('')
   const [savedApiKey, setSavedApiKey] = useState('')
 
@@ -129,7 +129,7 @@ const App: React.FC = () => {
     const trimmed = apiKey.trim()
     localStorage.setItem('csv_tool_api_key', trimmed)
     setSavedApiKey(trimmed)
-    addHistory('API key saved.')
+    addHistory('Gemini API key saved.')
   }
 
   const addHistory = (msg: string) => {
@@ -211,7 +211,7 @@ const App: React.FC = () => {
     addHistory('All files cleared.')
   }
 
-    // ডেমো জেনারেটর – API না থাকলে / fallback হিসেবে
+  // ডেমো জেনারেটর – API না থাকলে fallback
   const generateDemoMetadata = async (
     item: FileItem,
     index: number,
@@ -252,16 +252,17 @@ const App: React.FC = () => {
     }
   }
 
-  // OpenAI ব্যবহার করে রিয়েল মেটাডাটা জেনারেটর
-  const generateMetadataWithOpenAI = async (
+  // ✅ শুধু Gemini 2.0 Flash দিয়ে মেটাডাটা জেনারেটর
+  const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
     if (!savedApiKey) {
-      // নিরাপত্তার জন্য – key না থাকলে fallback
       return generateDemoMetadata(item, 0)
     }
 
-    const apiUrl = 'https://api.openai.com/v1/chat/completions'
+    const apiUrl =
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
+      encodeURIComponent(savedApiKey)
 
     const prompt = `
 You are an expert stock content metadata generator.
@@ -275,7 +276,7 @@ Mode: ${mode === 'metadata' ? 'metadata for title, keywords, description' : 'pro
 Requirements:
 - Language: English.
 - Title: maximum ${titleLength} characters, descriptive, no quotes.
-- Keywords: between 10 and ${keywordsCount} keywords, concept words only (no numbers, no symbols).
+- Keywords: between 10 and ${keywordsCount} single-word keywords (no multi-word phrases, no numbers, no symbols).
 - Description: maximum ${descriptionLength} characters, natural sentence.
 
 Return ONLY a JSON object with this exact shape:
@@ -284,27 +285,19 @@ Return ONLY a JSON object with this exact shape:
   "keywords": ["word1","word2", "..."],
   "description": "string"
 }
-Do not add any extra text outside the JSON.
+Do not add any explanation. Only raw JSON.
     `.trim()
 
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${savedApiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You create concise, commercially optimized metadata for stock content libraries. You MUST respond as a valid JSON object only.',
-          },
+        contents: [
           {
             role: 'user',
-            content: prompt,
+            parts: [{ text: prompt }],
           },
         ],
       }),
@@ -312,20 +305,25 @@ Do not add any extra text outside the JSON.
 
     if (!response.ok) {
       const text = await response.text()
-      throw new Error(`OpenAI error: ${response.status} ${text}`)
+      throw new Error(`Gemini error: ${response.status} ${text}`)
     }
 
     const data = await response.json()
-    const content = data?.choices?.[0]?.message?.content
-    if (!content) {
-      throw new Error('Empty response from OpenAI')
+    const text =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p: any) => p.text || '')
+        .join(' ')
+        .trim() || ''
+
+    if (!text) {
+      throw new Error('Empty response from Gemini')
     }
 
     let parsed: any
     try {
-      parsed = typeof content === 'string' ? JSON.parse(content) : content
+      parsed = JSON.parse(text)
     } catch {
-      throw new Error('Failed to parse JSON from OpenAI response')
+      throw new Error('Failed to parse JSON from Gemini response')
     }
 
     const rawTitle = String(parsed.title || '')
@@ -334,7 +332,6 @@ Do not add any extra text outside the JSON.
       : String(parsed.keywords || '')
     const rawDescription = String(parsed.description || '')
 
-    // Title ক্লিনিং + প্রিফিক্স/সাফিক্স
     let title = normalizeTitle(rawTitle).slice(0, titleLength)
     if (prefixEnabled && prefixText.trim()) {
       title = `${prefixText.trim()} ${title}`.trim()
@@ -343,7 +340,6 @@ Do not add any extra text outside the JSON.
       title = `${title} ${suffixText.trim()}`.trim()
     }
 
-    // Keyword গুলো এক শব্দে কনভার্ট + ডুপ্লিকেট রিমুভ + limit
     const keywords = autoCleanKeywords(
       rawKeywords,
       autoRemoveDupKeywords,
@@ -365,7 +361,7 @@ Do not add any extra text outside the JSON.
     }
   }
 
-  // একেকটা ফাইলের জন্য জেনারেশন হ্যান্ডলার
+  // প্রতিটি ফাইলের জন্য জেনারেশন
   const generateForItem = async (id: string, index: number) => {
     setFiles((prev) =>
       prev.map((f) => (f.id === id ? { ...f, status: 'generating', error: '' } : f)),
@@ -375,10 +371,15 @@ Do not add any extra text outside the JSON.
       const current = files.find((f) => f.id === id)
       if (!current) return
 
-      // যদি API key থাকে → OpenAI, না থাকলে ডেমো
-      const partial = savedApiKey
-        ? await generateMetadataWithOpenAI(current)
-        : await generateDemoMetadata(current, index)
+      let partial: Partial<FileItem>
+
+      if (!savedApiKey) {
+        // API key না থাকলে demo লজিক
+        partial = await generateDemoMetadata(current, index)
+      } else {
+        // Gemini ব্যবহার করব
+        partial = await generateMetadataWithGemini(current)
+      }
 
       setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
       setGeneratedCount((c) => c + 1)
@@ -402,7 +403,7 @@ Do not add any extra text outside the JSON.
     if (!savedApiKey) {
       if (
         !window.confirm(
-          'No OpenAI API key saved. Do you still want to generate using demo logic only?',
+          'No Gemini API key saved. Do you still want to generate using demo logic only?',
         )
       ) {
         return
@@ -553,7 +554,7 @@ Do not add any extra text outside the JSON.
               <div className="api-row">
                 <input
                   type="password"
-                  placeholder="Enter Gemini / ChatGPT API key"
+                  placeholder="Enter Gemini API key"
                   className="text-input full"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
