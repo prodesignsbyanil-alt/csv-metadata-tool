@@ -79,7 +79,7 @@ function autoCleanKeywords(
   return tokens.join(', ')
 }
 
-// ফাইলকে base64 string এ কনভার্ট (Gemini vision এর জন্য)
+// ফাইলকে base64 string এ কনভার্ট (PNG/JPG/WEBP/GIF ইত্যাদি)
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -111,6 +111,48 @@ async function fileToText(file: File): Promise<string> {
     }
     reader.onerror = () => reject(reader.error || new Error('FileReader error'))
     reader.readAsText(file)
+  })
+}
+
+// SVG → PNG (base64) কনভার্ট করার helper
+async function svgFileToPngBase64(file: File): Promise<string> {
+  // প্রথমে SVG ফাইলকে data URL বানাই
+  const dataUrl: string = await new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result
+      if (typeof result === 'string') {
+        resolve(result)
+      } else {
+        reject(new Error('Failed to read SVG as data URL'))
+      }
+    }
+    reader.onerror = () => reject(reader.error || new Error('FileReader error'))
+    reader.readAsDataURL(file)
+  })
+
+  // তারপর সেই data URL দিয়ে একটা <img> বানিয়ে canvas এ আঁকি
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const width = img.naturalWidth || img.width || 1024
+      const height = img.naturalHeight || img.height || 1024
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('Failed to get canvas context'))
+        return
+      }
+      ctx.clearRect(0, 0, width, height)
+      ctx.drawImage(img, 0, 0, width, height)
+      const pngDataUrl = canvas.toDataURL('image/png')
+      const base64 = pngDataUrl.split(',')[1] || ''
+      resolve(base64)
+    }
+    img.onerror = () => reject(new Error('Failed to render SVG to canvas'))
+    img.src = dataUrl
   })
 }
 
@@ -287,7 +329,7 @@ const App: React.FC = () => {
     }
   }
 
-  // ✅ Gemini 2.0 Flash + raster image vision + SVG text + keyword padding
+  // ✅ Gemini 2.0 Flash + raster image vision + SVG→PNG + keyword padding
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
@@ -300,21 +342,25 @@ const App: React.FC = () => {
       encodeURIComponent(savedApiKey)
 
     const prompt = `
-You are an expert stock content metadata generator.
-Generate high-quality metadata for a digital asset that will be uploaded to stock websites.
+You are an expert stock content metadata generator for stock websites like Adobe Stock, Shutterstock, Freepik, Vecteezy.
+
+You receive a rendered image of the asset (PNG/JPG) and sometimes the SVG source code.
+Look carefully at:
+- The main subject (dog, cat, human, yoga pose, abstract shape, etc.)
+- Style (silhouette, line art, flat, geometric, cartoon, minimal, etc.)
+- Colors
+- Background and composition (copy space, pattern, frame, center composition, etc.)
 
 File name: ${item.file.name}
 File type: ${item.file.type || 'unknown'}
 Target platform: ${platform}
 Mode: ${mode === 'metadata' ? 'metadata for title, keywords, description' : 'prompt focused'}
 
-Use the filename and, when available, the visual content of the file or the SVG source code to understand the subject, style and composition.
-
 Requirements:
 - Language: English.
-- Title: maximum ${titleLength} characters, descriptive, no quotes, relevant to THIS specific file.
-- Keywords: EXACTLY ${keywordsCount} single-word keywords (no multi-word phrases, no numbers, no symbols). All keywords must be directly relevant to this file.
-- Description: maximum ${descriptionLength} characters, natural sentence, accurately describing this file.
+- Title: maximum ${titleLength} characters, descriptive, no quotes, closely matching THIS specific image.
+- Keywords: EXACTLY ${keywordsCount} single-word keywords (no multi-word phrases, no numbers, no symbols). All keywords must be directly relevant to this image (subject, style, colors, mood, usage).
+- Description: maximum ${descriptionLength} characters, natural sentence, accurately describing the image for a stock site customer.
 
 Return ONLY a JSON object with this exact shape:
 {
@@ -331,27 +377,36 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     const parts: any[] = []
 
-    // ১️⃣ PNG/JPG/WEBP/GIF হলে inline image
+    // ১️⃣ PNG/JPG/WEBP/GIF হলে সরাসরি inline image
     if (isRasterImage) {
-      const fileBase64 = await fileToBase64(item.file)
+      const base64 = await fileToBase64(item.file)
       parts.push({
         inline_data: {
           mime_type: mimeType,
-          data: fileBase64,
+          data: base64,
         },
       })
     }
 
-    // ২️⃣ SVG হলে XML টেক্সট হিসেবে পাঠাই
+    // ২️⃣ SVG হলে আগে PNG-তে কনভার্ট করে inline image হিসেবে পাঠাই
     if (isSvg) {
-      const svgText = await fileToText(item.file)
-      const truncated = svgText.slice(0, 4000) // context বাঁচাতে
+      const pngBase64 = await svgFileToPngBase64(item.file)
       parts.push({
-        text: 'Here is the SVG source code (truncated):\n' + truncated,
+        inline_data: {
+          mime_type: 'image/png',
+          data: pngBase64,
+        },
+      })
+
+      // সাথে ছোট SVG source snippet টেক্সট আকারে দেই (ঐচ্ছিক, extra hint)
+      const svgText = await fileToText(item.file)
+      const truncated = svgText.slice(0, 3000)
+      parts.push({
+        text: 'Here is the beginning of the SVG source code (truncated):\n' + truncated,
       })
     }
 
-    // ৩️⃣ সব ক্ষেত্রে prompt যোগ হবে
+    // ৩️⃣ সব ক্ষেত্রে main prompt যোগ হবে
     parts.push({ text: prompt })
 
     const response = await fetch(apiUrl, {
@@ -510,10 +565,8 @@ No explanation. No markdown. No extra text. Only raw JSON.
       let partial: Partial<FileItem>
 
       if (!savedApiKey) {
-        // API key না থাকলে demo লজিক
         partial = await generateDemoMetadata(current, index)
       } else {
-        // Gemini ব্যবহার করব
         partial = await generateMetadataWithGemini(current)
       }
 
