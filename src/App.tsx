@@ -1,5 +1,7 @@
 import React, { useEffect, useState, ChangeEvent } from 'react'
 import './App.css'
+import JSZip from 'jszip'
+import { saveAs } from 'file-saver'
 
 type Platform = 'adobe' | 'freepik' | 'shutterstock' | 'general' | 'vecteezy'
 type Mode = 'metadata' | 'prompt'
