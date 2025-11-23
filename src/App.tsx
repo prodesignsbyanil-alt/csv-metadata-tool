@@ -97,6 +97,23 @@ async function fileToBase64(file: File): Promise<string> {
   })
 }
 
+// SVG / টেক্সট ফাইল পড়ার জন্য
+async function fileToText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result
+      if (typeof result === 'string') {
+        resolve(result)
+      } else {
+        resolve('')
+      }
+    }
+    reader.onerror = () => reject(reader.error || new Error('FileReader error'))
+    reader.readAsText(file)
+  })
+}
+
 const App: React.FC = () => {
   // Login
   const [email, setEmail] = useState('')
@@ -270,7 +287,7 @@ const App: React.FC = () => {
     }
   }
 
-  // ✅ Gemini 2.0 Flash + image vision + keyword padding
+  // ✅ Gemini 2.0 Flash + raster image vision + SVG text + keyword padding
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
@@ -282,10 +299,6 @@ const App: React.FC = () => {
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
       encodeURIComponent(savedApiKey)
 
-    // ফাইলকে base64 বানাচ্ছি যাতে Gemini ইমেজ/ভেক্টর দেখেতে পারে
-    const fileBase64 = await fileToBase64(item.file)
-    const mimeType = item.file.type || 'image/*'
-
     const prompt = `
 You are an expert stock content metadata generator.
 Generate high-quality metadata for a digital asset that will be uploaded to stock websites.
@@ -295,7 +308,7 @@ File type: ${item.file.type || 'unknown'}
 Target platform: ${platform}
 Mode: ${mode === 'metadata' ? 'metadata for title, keywords, description' : 'prompt focused'}
 
-Use BOTH the visual content of the file and the filename to understand the subject, style and composition.
+Use the filename and, when available, the visual content of the file or the SVG source code to understand the subject, style and composition.
 
 Requirements:
 - Language: English.
@@ -312,6 +325,35 @@ Return ONLY a JSON object with this exact shape:
 No explanation. No markdown. No extra text. Only raw JSON.
     `.trim()
 
+    const mimeType = item.file.type || ''
+    const isRasterImage = /^image\/(png|jpe?g|webp|gif)$/i.test(mimeType)
+    const isSvg = mimeType === 'image/svg+xml' || /\.svg$/i.test(item.file.name)
+
+    const parts: any[] = []
+
+    // ১️⃣ PNG/JPG/WEBP/GIF হলে inline image
+    if (isRasterImage) {
+      const fileBase64 = await fileToBase64(item.file)
+      parts.push({
+        inline_data: {
+          mime_type: mimeType,
+          data: fileBase64,
+        },
+      })
+    }
+
+    // ২️⃣ SVG হলে XML টেক্সট হিসেবে পাঠাই
+    if (isSvg) {
+      const svgText = await fileToText(item.file)
+      const truncated = svgText.slice(0, 4000) // context বাঁচাতে
+      parts.push({
+        text: 'Here is the SVG source code (truncated):\n' + truncated,
+      })
+    }
+
+    // ৩️⃣ সব ক্ষেত্রে prompt যোগ হবে
+    parts.push({ text: prompt })
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -321,15 +363,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
         contents: [
           {
             role: 'user',
-            parts: [
-              {
-                inline_data: {
-                  mime_type: mimeType,
-                  data: fileBase64,
-                },
-              },
-              { text: prompt },
-            ],
+            parts,
           },
         ],
         generationConfig: {
