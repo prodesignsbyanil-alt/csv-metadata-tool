@@ -301,7 +301,6 @@ const App: React.FC = () => {
         // ignore
       }
     }
-    // পুরনো single key থাকলে migrate
     const oldSingle = localStorage.getItem('csv_tool_api_key') || ''
     if (oldSingle) {
       setSavedApiKeys([oldSingle])
@@ -403,44 +402,6 @@ const App: React.FC = () => {
     addHistory('All files cleared.')
   }
 
-  // ডেমো জেনারেটর – API না থাকলে fallback
-  const generateDemoMetadata = async (
-    item: FileItem,
-    index: number,
-  ): Promise<Partial<FileItem>> => {
-    const baseName = item.file.name.replace(/\.[^.]+$/, '')
-    const rawTitle = `${baseName} stock image illustration`
-
-    let title = normalizeTitle(rawTitle).slice(0, titleLength)
-    if (prefixEnabled && prefixText.trim()) {
-      title = `${prefixText.trim()} ${title}`.trim()
-    }
-    if (suffixEnabled && suffixText.trim()) {
-      title = `${title} ${suffixText.trim()}`.trim()
-    }
-
-    const kwBase = `abstract vector, clean silhouette, high quality, commercial use, ${platform} ready, stock image, ${baseName}`
-
-    const keywords = buildKeywords(
-      kwBase,
-      bulkKeywordEnabled ? bulkKeywordText : '',
-      autoRemoveDupKeywords,
-      keywordsCount,
-    )
-
-    const descBase = `High quality ${platform} friendly stock asset generated from file ${baseName}. Perfect for print-on-demand, templates, mockups, stickers and professional use.`
-    const description = descBase.slice(0, descriptionLength)
-
-    await new Promise((res) => setTimeout(res, 200 + index * 5))
-
-    return {
-      title,
-      keywords,
-      description,
-      status: 'success',
-    }
-  }
-
   // একেকটা key দিয়ে Gemini কল করার helper
   const callGeminiWithKey = async (
     item: FileItem,
@@ -486,7 +447,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     const parts: any[] = []
 
-    // ১️⃣ PNG/JPG/WEBP/GIF হলে সরাসরি inline image
     if (isRasterImage) {
       const base64 = await fileToBase64(item.file)
       parts.push({
@@ -497,7 +457,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       })
     }
 
-    // ২️⃣ SVG হলে আগে PNG-তে কনভার্ট করে inline image হিসেবে পাঠাই
     if (isSvg) {
       const pngBase64 = await svgFileToPngBase64(item.file)
       parts.push({
@@ -514,7 +473,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       })
     }
 
-    // ৩️⃣ সব ক্ষেত্রে main prompt যোগ হবে
     parts.push({ text: prompt })
 
     const response = await fetch(apiUrl, {
@@ -542,7 +500,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     const data = await response.json()
 
-    // Gemini → text extract
     let rawText = ''
 
     if (
@@ -565,7 +522,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       throw new Error('Empty response from Gemini')
     }
 
-    // ```json ব্লক / বাড়তি টেক্সট পরিষ্কার করা
     let jsonText = rawText.trim()
     jsonText = jsonText.replace(/```json/gi, '').replace(/```/g, '').trim()
 
@@ -590,7 +546,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       : String(parsed.keywords || '')
     const rawDescription = String(parsed.description || '')
 
-    // Title ক্লিন + প্রিফিক্স/সাফিক্স
     let title = normalizeTitle(rawTitle).slice(0, titleLength)
     if (prefixEnabled && prefixText.trim()) {
       title = `${prefixText.trim()} ${title}`.trim()
@@ -599,7 +554,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       title = `${title} ${suffixText.trim()}`.trim()
     }
 
-    // Bulk + Gemini keywords মিলিয়ে final keywords বানানো
     const keywords = buildKeywords(
       rawKeywords,
       bulkKeywordEnabled ? bulkKeywordText : '',
@@ -617,12 +571,12 @@ No explanation. No markdown. No extra text. Only raw JSON.
     }
   }
 
-  // ✅ একাধিক key ব্যবহার করে Gemini কল
+  // ✅ একাধিক key ব্যবহার করে Gemini কল (demo fallback বাদ)
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
     if (!savedApiKeys.length) {
-      return generateDemoMetadata(item, 0)
+      throw new Error('No Gemini API keys configured.')
     }
 
     let lastError: any = null
@@ -641,12 +595,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
       }
     }
 
-    // সব key ফেইল করলে demo তে fallback করি
-    addHistory('All Gemini keys failed. Falling back to demo generator.')
-    if (lastError) {
-      console.error('All Gemini errors, last:', lastError)
-    }
-    return generateDemoMetadata(item, 0)
+    throw lastError || new Error('All Gemini API keys failed.')
   }
 
   // প্রতিটি ফাইলের জন্য জেনারেশন
@@ -659,26 +608,21 @@ No explanation. No markdown. No extra text. Only raw JSON.
       const current = files.find((f) => f.id === id)
       if (!current) return
 
-      let partial: Partial<FileItem>
-
       if (!savedApiKeys.length) {
-        partial = await generateDemoMetadata(current, index)
-      } else {
-        partial = await generateMetadataWithGemini(current)
+        throw new Error('No Gemini API keys configured.')
       }
+
+      const partial = await generateMetadataWithGemini(current)
 
       setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
       setGeneratedCount((c) => c + 1)
     } catch (err: any) {
       console.error(err)
-      addHistory(
-        `Generation failed for ${id}: ${
-          err && err.message ? err.message : 'Unknown error'
-        }`,
-      )
+      const msg = err && err.message ? err.message : 'Unknown error'
+      addHistory(`Generation failed for ${id}: ${msg}`)
       setFiles((prev) =>
         prev.map((f) =>
-          f.id === id ? { ...f, status: 'failed', error: 'Generation failed' } : f,
+          f.id === id ? { ...f, status: 'failed', error: msg } : f,
         ),
       )
       setFailedCount((c) => c + 1)
@@ -687,13 +631,8 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
   const handleGenerateAll = async () => {
     if (!savedApiKeys.length) {
-      if (
-        !window.confirm(
-          'No Gemini API key saved. Do you still want to generate using demo logic only?',
-        )
-      ) {
-        return
-      }
+      alert('No Gemini API keys saved. Please add at least one key before generating.')
+      return
     }
 
     setIsGeneratingAll(true)
@@ -823,20 +762,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
             </button>
           </div>
 
-          {/* আপনার Developed By avatar ব্লক এখানে রাখবেন */}
-          {/* উদাহরণ (যদি এখনো না থাকে):
-          <div className="topbar-developed-box">
-            <img
-              src="/anil-chandra-barman.jpg"
-              alt="Anil Chandra Barman"
-              className="developed-by-avatar"
-            />
-            <div className="developed-by-text">
-              <span className="developed-by-label">Developed By</span>
-              <span className="developed-by-name">Anil Chandra Barman</span>
-            </div>
-          </div>
-          */}
+          {/* এখানে আগের মত আপনার avatar ব্লক থাকলে রাখুন */}
         </div>
       </header>
 
