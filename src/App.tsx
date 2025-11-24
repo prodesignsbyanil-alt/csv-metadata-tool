@@ -18,7 +18,7 @@ interface FileItem {
   error?: string
 }
 
-/** Title normalizer */
+/** ----- Title cleaner ----- */
 function normalizeTitle(raw: string): string {
   let text = raw
     .replace(/[0-9#_=+*{}\[\];:<>/\\|~`"“”'’.,!?()-]/g, ' ')
@@ -44,12 +44,7 @@ function normalizeTitle(raw: string): string {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
 }
 
-/**
- * Keyword cleaner
- * - Bulk keyword extra যোগ করে
- * - প্রতিটি keyword থেকে শুধু প্রথম শব্দ নেয় (one-word keywords)
- * - ডুপ্লিকেট থাকলে remove করে
- */
+/** ----- Keyword cleaner: সব keyword এক শব্দ করা + ডুপ্লিকেট রিমুভ ----- */
 function autoCleanKeywords(
   raw: string,
   autoRemoveDupKeywords: boolean,
@@ -62,6 +57,7 @@ function autoCleanKeywords(
     .split(/[,;\n]/)
     .map((t) => t.trim())
     .filter(Boolean)
+    // multi-word phrase → শুধু প্রথম শব্দ
     .map((t) => t.split(/\s+/)[0])
     .filter(Boolean)
 
@@ -80,11 +76,7 @@ function autoCleanKeywords(
   return tokens.join(', ')
 }
 
-/**
- * Bulk + base keywords থেকে final keyword string বানানোর helper
- * - bulk keywords সবসময় লিস্টের শুরুতে থাকবে
- * - exact targetCount অনুযায়ী truncate / fill করবে
- */
+/** ----- base + bulk keyword merge + padding to exact count ----- */
 function buildKeywords(
   baseKeywords: string,
   bulkKeywordText: string,
@@ -101,7 +93,7 @@ function buildKeywords(
     .map((t) => t.trim())
     .filter(Boolean)
 
-  // শুধু bulk keyword আলাদা করে parse করি
+  // শুধু bulk keyword আলাদা করে parse করি – যাতে সবসময় আগে থাকে
   let bulkTokens: string[] = []
   if (bulkKeywordText && bulkKeywordText.trim()) {
     bulkTokens = autoCleanKeywords(bulkKeywordText, autoRemoveDupKeywords, '')
@@ -110,7 +102,6 @@ function buildKeywords(
       .filter(Boolean)
   }
 
-  // bulk keywords গুলোকে সবসময় সামনে আনা + ডুপ্লিকেট বাদ
   if (bulkTokens.length) {
     const reordered: string[] = []
     const seen = new Set<string>()
@@ -132,7 +123,6 @@ function buildKeywords(
     combined = reordered
   }
 
-  // দরকার হলে filler keyword দিয়ে পূরণ করি
   const fillerPool = [
     'vector',
     'illustration',
@@ -167,11 +157,12 @@ function buildKeywords(
     }
   }
 
-  // final count = targetCount
   return combined.slice(0, targetCount).join(', ')
 }
 
-// ফাইলকে base64 string এ কনভার্ট (PNG/JPG/WEBP/GIF ইত্যাদি)
+/** ----- File helpers ----- */
+
+// image → base64 (PNG/JPG/WEBP/GIF)
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -189,7 +180,7 @@ async function fileToBase64(file: File): Promise<string> {
   })
 }
 
-// SVG / টেক্সট ফাইল পড়ার জন্য
+// SVG / text → string
 async function fileToText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -206,7 +197,7 @@ async function fileToText(file: File): Promise<string> {
   })
 }
 
-// SVG → PNG (base64) কনভার্ট করার helper
+// SVG → PNG (base64) – Gemini vision এর জন্য
 async function svgFileToPngBase64(file: File): Promise<string> {
   const dataUrl: string = await new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -246,19 +237,20 @@ async function svgFileToPngBase64(file: File): Promise<string> {
   })
 }
 
+/** ===================== MAIN APP ===================== */
+
+const MAX_KEYS = 5
+
 const App: React.FC = () => {
   // Login
   const [email, setEmail] = useState('')
   const [isLoggedIn, setIsLoggedIn] = useState(false)
 
   // Gemini API keys (up to 5)
-  const [apiKeysInput, setApiKeysInput] = useState('')
-  const [apiKeys, setApiKeys] = useState<string[]>([])
+  const [apiKeys, setApiKeys] = useState<string[]>(Array(MAX_KEYS).fill(''))
 
-  // Mode: Metadata / Prompt
+  // Mode & platform
   const [mode, setMode] = useState<Mode>('metadata')
-
-  // Platform
   const [platform, setPlatform] = useState<Platform>('adobe')
 
   // Controls
@@ -267,17 +259,15 @@ const App: React.FC = () => {
   const [descriptionLength, setDescriptionLength] = useState(200)
   const [autoRemoveDupKeywords, setAutoRemoveDupKeywords] = useState(true)
 
-  // Bulk keyword option
+  // Bulk keyword, prefix/suffix
   const [bulkKeywordEnabled, setBulkKeywordEnabled] = useState(false)
   const [bulkKeywordText, setBulkKeywordText] = useState('')
-
-  // Prefix / Suffix
   const [prefixEnabled, setPrefixEnabled] = useState(false)
   const [suffixEnabled, setSuffixEnabled] = useState(false)
   const [prefixText, setPrefixText] = useState('')
   const [suffixText, setSuffixText] = useState('')
 
-  // Files
+  // Files & state
   const [files, setFiles] = useState<FileItem[]>([])
   const [uploadProgress, setUploadProgress] = useState(0)
   const [generatedCount, setGeneratedCount] = useState(0)
@@ -285,37 +275,52 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<string[]>([])
   const [isGeneratingAll, setIsGeneratingAll] = useState(false)
 
-  // LocalStorage থেকে API keys রিস্টোর
+  /** ---- Load API keys from localStorage ---- */
   useEffect(() => {
-    const stored = localStorage.getItem('csv_tool_gemini_keys') || ''
-    setApiKeysInput(stored)
-    const keys = stored
-      .split(/\r?\n/)
-      .map((k) => k.trim())
-      .filter(Boolean)
-      .slice(0, 5)
-    setApiKeys(keys)
+    const stored = localStorage.getItem('csv_tool_gemini_keys')
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        if (Array.isArray(parsed)) {
+          const normalized: string[] = Array(MAX_KEYS).fill('')
+          parsed.slice(0, MAX_KEYS).forEach((k: string, idx: number) => {
+            normalized[idx] = String(k || '')
+          })
+          setApiKeys(normalized)
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
   }, [])
 
-  const handleSaveApiKeys = () => {
-    const keys = apiKeysInput
-      .split(/\r?\n/)
-      .map((k) => k.trim())
-      .filter(Boolean)
-      .slice(0, 5)
-
-    if (!keys.length) {
-      alert('Please enter at least one Gemini API key.')
-      return
-    }
-
-    localStorage.setItem('csv_tool_gemini_keys', apiKeysInput)
-    setApiKeys(keys)
-    addHistory(`Gemini API keys saved (${keys.length}).`)
-  }
+  /** ---- Helpers ---- */
 
   const addHistory = (msg: string) => {
     setHistory((prev) => [`${new Date().toLocaleTimeString()} - ${msg}`, ...prev])
+  }
+
+  const handleSaveApiKeys = () => {
+    const cleaned = apiKeys.map((k) => k.trim()).filter((k) => k.length > 0)
+    if (!cleaned.length) {
+      alert('Please add at least one Gemini API key.')
+      return
+    }
+    localStorage.setItem('csv_tool_gemini_keys', JSON.stringify(cleaned))
+    const normalized: string[] = Array(MAX_KEYS).fill('')
+    cleaned.slice(0, MAX_KEYS).forEach((k, idx) => {
+      normalized[idx] = k
+    })
+    setApiKeys(normalized)
+    addHistory(`Saved ${cleaned.length} Gemini API key(s).`)
+  }
+
+  const handleApiKeyChange = (index: number, value: string) => {
+    setApiKeys((prev) => {
+      const copy = [...prev]
+      copy[index] = value
+      return copy
+    })
   }
 
   // Email login
@@ -332,12 +337,12 @@ const App: React.FC = () => {
     setEmail('')
   }
 
-  // File upload
+  /** ---- File upload ---- */
+
   const handleFilesAdded = (fileList: FileList | null) => {
     if (!fileList) return
     const arr = Array.from(fileList).slice(0, 1000 - files.length)
-
-    if (arr.length === 0) return
+    if (!arr.length) return
 
     const total = files.length + arr.length
     let processed = files.length
@@ -393,24 +398,24 @@ const App: React.FC = () => {
     addHistory('All files cleared.')
   }
 
-  /** Gemini কল – একটি key ব্যবহার করে একবার ট্রাই */
-  const callGeminiOnce = async (
-    item: FileItem,
+  /** ---- Gemini single-call, for one key ---- */
+  const callGeminiWithKey = async (
     apiKey: string,
+    item: FileItem,
   ): Promise<Partial<FileItem>> => {
     const apiUrl =
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
       encodeURIComponent(apiKey)
 
     const prompt = `
-You are an expert stock content metadata generator for stock websites like Adobe Stock, Shutterstock, Freepik, Vecteezy.
+You are an expert stock content metadata generator for sites like Adobe Stock, Shutterstock, Freepik, and Vecteezy.
 
-You receive a rendered image of the asset (PNG/JPG) and sometimes the SVG source code.
-Look carefully at:
-- The main subject (dog, cat, human, yoga pose, abstract shape, etc.)
-- Style (silhouette, line art, flat, geometric, cartoon, minimal, etc.)
+You receive a rendered image (PNG/JPG/WEBP/GIF) or a vector (SVG converted to PNG).
+Carefully analyze:
+- Main subject (e.g. cat, dog, abstract geometric pattern, human, etc.)
+- Style (silhouette, line art, flat, geometric, cartoon, minimal, abstract, etc.)
 - Colors
-- Background and composition (copy space, pattern, frame, center composition, etc.)
+- Background and composition (copy space, pattern, framing, etc.)
 
 File name: ${item.file.name}
 File type: ${item.file.type || 'unknown'}
@@ -419,14 +424,14 @@ Mode: ${mode === 'metadata' ? 'metadata for title, keywords, description' : 'pro
 
 Requirements:
 - Language: English.
-- Title: maximum ${titleLength} characters, descriptive, no quotes, closely matching THIS specific image.
-- Keywords: EXACTLY ${keywordsCount} single-word keywords (no multi-word phrases, no numbers, no symbols). All keywords must be directly relevant to this image (subject, style, colors, mood, usage).
-- Description: maximum ${descriptionLength} characters, natural sentence, accurately describing the image for a stock site customer.
+- Title: max ${titleLength} characters, no quotes, very specific to THIS image.
+- Keywords: EXACTLY ${keywordsCount} single-word keywords (no phrases, no numbers, no symbols). All must be relevant to this image only (subject, style, colors, mood, usage).
+- Description: max ${descriptionLength} characters, 1–2 natural sentences describing the image for a stock customer.
 
-Return ONLY a JSON object with this exact shape:
+Return ONLY a JSON object in this exact shape:
 {
   "title": "string",
-  "keywords": ["word1","word2", "..."],
+  "keywords": ["word1", "word2", "..."],
   "description": "string"
 }
 No explanation. No markdown. No extra text. Only raw JSON.
@@ -438,7 +443,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     const parts: any[] = []
 
-    // Raster image হলে সরাসরি inline image
     if (isRasterImage) {
       const base64 = await fileToBase64(item.file)
       parts.push({
@@ -449,7 +453,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       })
     }
 
-    // SVG হলে PNG-তে কনভার্ট করে inline image + ছোট SVG টেক্সট
     if (isSvg) {
       const pngBase64 = await svgFileToPngBase64(item.file)
       parts.push({
@@ -466,14 +469,11 @@ No explanation. No markdown. No extra text. Only raw JSON.
       })
     }
 
-    // Main prompt
     parts.push({ text: prompt })
 
     const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [
           {
@@ -489,14 +489,12 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     if (!response.ok) {
       const text = await response.text()
-      throw new Error(`Gemini error: ${response.status} ${text}`)
+      throw new Error(`Gemini error (${response.status}): ${text}`)
     }
 
     const data = await response.json()
 
-    // Gemini → text extract
-    let rawText: string = ''
-
+    let rawText = ''
     if (
       data &&
       data.candidates &&
@@ -517,10 +515,8 @@ No explanation. No markdown. No extra text. Only raw JSON.
       throw new Error('Empty response from Gemini')
     }
 
-    // ```json ব্লক / বাড়তি টেক্সট পরিষ্কার করা
     let jsonText = rawText.trim()
     jsonText = jsonText.replace(/```json/gi, '').replace(/```/g, '').trim()
-
     const firstBrace = jsonText.indexOf('{')
     const lastBrace = jsonText.lastIndexOf('}')
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -532,7 +528,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
       parsed = JSON.parse(jsonText)
     } catch (e) {
       console.error('Gemini rawText:', rawText)
-      console.error('Gemini jsonText used for parse:', jsonText)
+      console.error('Gemini jsonText:', jsonText)
       throw new Error('Failed to parse JSON from Gemini response')
     }
 
@@ -542,7 +538,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       : String(parsed.keywords || '')
     const rawDescription = String(parsed.description || '')
 
-    // Title ক্লিন + প্রিফিক্স/সাফিক্স
     let title = normalizeTitle(rawTitle).slice(0, titleLength)
     if (prefixEnabled && prefixText.trim()) {
       title = `${prefixText.trim()} ${title}`.trim()
@@ -551,7 +546,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       title = `${title} ${suffixText.trim()}`.trim()
     }
 
-    // Bulk + Gemini keywords মিলিয়ে final keywords বানানো
     const keywords = buildKeywords(
       rawKeywords,
       bulkKeywordEnabled ? bulkKeywordText : '',
@@ -569,29 +563,38 @@ No explanation. No markdown. No extra text. Only raw JSON.
     }
   }
 
-  /** Multiple API keys সহ জেনারেশন */
+  /** ---- Generate metadata with multiple keys (rotation / fallback) ---- */
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
-    if (!apiKeys.length) {
+    const keys = apiKeys.map((k) => k.trim()).filter((k) => k.length > 0)
+    if (!keys.length) {
       throw new Error('No Gemini API keys configured.')
     }
 
     let lastError: any = null
 
-    for (const key of apiKeys) {
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
       try {
-        return await callGeminiOnce(item, key)
-      } catch (err) {
-        console.error('Gemini error with key, trying next key...', err)
+        const result = await callGeminiWithKey(key, item)
+        addHistory(`Gemini generation succeeded with key #${i + 1} for ${item.file.name}`)
+        return result
+      } catch (err: any) {
         lastError = err
+        console.error(`Gemini key #${i + 1} failed for ${item.file.name}`, err)
+        addHistory(
+          `Gemini key #${i + 1} failed for ${item.file.name}: ${
+            err && err.message ? err.message : 'Unknown error'
+          }`,
+        )
       }
     }
 
     throw lastError || new Error('All Gemini API keys failed.')
   }
 
-  // প্রতিটি ফাইলের জন্য জেনারেশন
+  /** ---- Per-file generation ---- */
   const generateForItem = async (id: string, index: number) => {
     setFiles((prev) =>
       prev.map((f) => (f.id === id ? { ...f, status: 'generating', error: '' } : f)),
@@ -602,7 +605,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
       if (!current) return
 
       const partial = await generateMetadataWithGemini(current)
-
       setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...partial } : f)))
       setGeneratedCount((c) => c + 1)
     } catch (err: any) {
@@ -622,13 +624,9 @@ No explanation. No markdown. No extra text. Only raw JSON.
   }
 
   const handleGenerateAll = async () => {
-    if (!apiKeys.length) {
-      alert('Please save at least one Gemini API key first.')
-      return
-    }
-
-    if (!files.length) {
-      alert('No files to generate.')
+    const hasKey = apiKeys.some((k) => k.trim().length > 0)
+    if (!hasKey) {
+      alert('Please save at least one Gemini API key before generating.')
       return
     }
 
@@ -654,7 +652,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
     void generateForItem(id, index)
   }
 
-  // ✅ ZIP Export – AI.csv, EPS.csv, SVG.csv, General.csv
+  /** ---- CSV ZIP export ---- */
   const handleExportCsv = async () => {
     if (!files.length) {
       alert('No files to export.')
@@ -663,7 +661,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
     const buildCsv = (items: FileItem[]): string => {
       const header = ['filename', 'title', 'keywords', 'description', 'platform']
-
       const rows = items.map((f) => [
         f.file.name,
         f.title,
@@ -696,7 +693,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
     )
 
     const zip = new JSZip()
-
     zip.file('AI.csv', buildCsv(aiFiles))
     zip.file('EPS.csv', buildCsv(epsFiles))
     zip.file('SVG.csv', buildCsv(svgFiles))
@@ -718,7 +714,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, [field]: value } : f)))
   }
 
-  // Login screen
+  /** ---- Login screen ---- */
   if (!isLoggedIn) {
     return (
       <div className="login-wrapper">
@@ -743,6 +739,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
     )
   }
 
+  /** ---- Main UI ---- */
   return (
     <div className="app-root">
       {/* Topbar */}
@@ -782,19 +779,29 @@ No explanation. No markdown. No extra text. Only raw JSON.
           <section className="card">
             <div className="card-row">
               <h2 className="card-title">Generation Controls</h2>
-              <div className="api-row">
-                <textarea
-                  className="text-area"
-                  placeholder="Enter up to 5 Gemini API keys, one per line."
-                  value={apiKeysInput}
-                  onChange={(e) => setApiKeysInput(e.target.value)}
-                />
-                <button className="primary-btn" onClick={handleSaveApiKeys}>
-                  Save
-                </button>
+
+              <label className="slider-label" style={{ marginTop: 4 }}>
+                Gemini API keys (max {MAX_KEYS})
+              </label>
+              <div className="api-keys-grid">
+                {apiKeys.map((key, idx) => (
+                  <input
+                    key={idx}
+                    type="password"
+                    className="text-input full api-key-input"
+                    placeholder={`Gemini API key ${idx + 1}`}
+                    value={key}
+                    onChange={(e) => handleApiKeyChange(idx, e.target.value)}
+                  />
+                ))}
               </div>
+
+              <button className="primary-btn" style={{ marginTop: 6 }} onClick={handleSaveApiKeys}>
+                Save API Keys
+              </button>
             </div>
-            <div className="card-row toggle-row">
+
+            <div className="card-row toggle-row" style={{ marginTop: 10 }}>
               <button
                 className={'toggle-btn' + (mode === 'metadata' ? ' toggle-btn-active' : '')}
                 onClick={() => setMode('metadata')}
