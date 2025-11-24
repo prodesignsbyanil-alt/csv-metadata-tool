@@ -1,4 +1,4 @@
-import React, { useEffect, useState, ChangeEvent } from 'react'
+import React, { useEffect, useState, ChangeEvent, useRef } from 'react'
 import './App.css'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
@@ -274,6 +274,10 @@ const App: React.FC = () => {
   const [failedCount, setFailedCount] = useState(0)
   const [history, setHistory] = useState<string[]>([])
   const [isGeneratingAll, setIsGeneratingAll] = useState(false)
+
+  // নতুন: stop flag (Start / Stop টগল করার জন্য)
+  const [stopRequested, setStopRequested] = useState(false)
+  const stopRequestedRef = useRef(false)
 
   /** ---- Load API keys from localStorage ---- */
   useEffect(() => {
@@ -623,27 +627,53 @@ No explanation. No markdown. No extra text. Only raw JSON.
     }
   }
 
+  /** ---- Generate All / Stop ---- */
   const handleGenerateAll = async () => {
     const hasKey = apiKeys.some((k) => k.trim().length > 0)
+
+    // যদি এখন জেনারেট চলছে → এই ক্লিকটাকে STOP হিসেবে ধরব
+    if (isGeneratingAll) {
+      setStopRequested(true)
+      stopRequestedRef.current = true
+      addHistory(
+        'Stop requested. Current file will finish and remaining files will stay pending.',
+      )
+      return
+    }
+
+    // নতুনভাবে জেনারেশন শুরু
     if (!hasKey) {
       alert('Please save at least one Gemini API key before generating.')
       return
     }
 
     setIsGeneratingAll(true)
+    setStopRequested(false)
+    stopRequestedRef.current = false
     setGeneratedCount(0)
     setFailedCount(0)
     addHistory('Generation started for all files.')
 
     const pending = files.filter((f) => f.status === 'pending' || f.status === 'failed')
+    let stoppedByUser = false
 
     for (let i = 0; i < pending.length; i++) {
+      if (stopRequestedRef.current) {
+        stoppedByUser = true
+        addHistory('Generation stopped by user.')
+        break
+      }
       // eslint-disable-next-line no-await-in-loop
       await generateForItem(pending[i].id, i)
     }
 
     setIsGeneratingAll(false)
-    addHistory('Generation finished.')
+    setStopRequested(false)
+    stopRequestedRef.current = false
+
+    if (!stoppedByUser) {
+      addHistory('Generation finished.')
+    }
   }
 
   const handleRegenerate = (id: string) => {
@@ -1049,11 +1079,11 @@ No explanation. No markdown. No extra text. Only raw JSON.
                   Clear All
                 </button>
                 <button
-                  className="primary-btn"
+                  className={`primary-btn ${isGeneratingAll ? 'danger-btn' : ''}`}
                   onClick={handleGenerateAll}
-                  disabled={!files.length || isGeneratingAll}
+                  disabled={!files.length}
                 >
-                  {isGeneratingAll ? 'Generating…' : 'Generate All'}
+                  {isGeneratingAll ? 'Stop' : 'Generate All'}
                 </button>
                 <button
                   className="outline-btn"
