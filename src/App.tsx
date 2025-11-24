@@ -79,6 +79,97 @@ function autoCleanKeywords(
   return tokens.join(', ')
 }
 
+// Bulk + base keywords থেকে final keyword string বানানোর helper
+function buildKeywords(
+  baseKeywords: string,
+  bulkKeywordText: string,
+  autoRemoveDupKeywords: boolean,
+  targetCount: number,
+): string {
+  // base + bulk একসাথে ক্লিন করি
+  let combined = autoCleanKeywords(
+    baseKeywords,
+    autoRemoveDupKeywords,
+    bulkKeywordText || '',
+  )
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+
+  // শুধু bulk keyword আলাদা করে parse করি
+  let bulkTokens: string[] = []
+  if (bulkKeywordText && bulkKeywordText.trim()) {
+    bulkTokens = autoCleanKeywords(
+      bulkKeywordText,
+      autoRemoveDupKeywords,
+      '',
+    )
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean)
+  }
+
+  // bulk keywords গুলোকে সবসময় সামনে আনা + ডুপ্লিকেট বাদ
+  if (bulkTokens.length) {
+    const reordered: string[] = []
+    const seen = new Set<string>()
+
+    for (const word of bulkTokens) {
+      if (!seen.has(word)) {
+        reordered.push(word)
+        seen.add(word)
+      }
+    }
+
+    for (const t of combined) {
+      if (!seen.has(t)) {
+        reordered.push(t)
+        seen.add(t)
+      }
+    }
+
+    combined = reordered
+  }
+
+  // দরকার হলে filler keyword দিয়ে পূরণ করি
+  const fillerPool = [
+    'vector',
+    'illustration',
+    'design',
+    'art',
+    'graphic',
+    'symbol',
+    'icon',
+    'minimal',
+    'modern',
+    'abstract',
+    'background',
+    'template',
+    'creative',
+    'digital',
+    'silhouette',
+    'pattern',
+    'shape',
+    'line',
+    'curve',
+    'poster',
+    'print',
+    'stock',
+    'commercial',
+    'concept',
+  ]
+
+  for (const word of fillerPool) {
+    if (combined.length >= targetCount) break
+    if (!combined.includes(word)) {
+      combined.push(word)
+    }
+  }
+
+  // final count = targetCount
+  return combined.slice(0, targetCount).join(', ')
+}
+
 // ফাইলকে base64 string এ কনভার্ট (PNG/JPG/WEBP/GIF ইত্যাদি)
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -305,16 +396,13 @@ const App: React.FC = () => {
     }
 
     const kwBase = `abstract vector, clean silhouette, high quality, commercial use, ${platform} ready, stock image, ${baseName}`
-    const keywords = autoCleanKeywords(
+
+    const keywords = buildKeywords(
       kwBase,
-      autoRemoveDupKeywords,
       bulkKeywordEnabled ? bulkKeywordText : '',
+      autoRemoveDupKeywords,
+      keywordsCount,
     )
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .slice(0, keywordsCount)
-      .join(', ')
 
     const descBase = `High quality ${platform} friendly stock asset generated from file ${baseName}. Perfect for print-on-demand, templates, mockups, stickers and professional use.`
     const description = descBase.slice(0, descriptionLength)
@@ -491,56 +579,13 @@ No explanation. No markdown. No extra text. Only raw JSON.
       title = `${title} ${suffixText.trim()}`.trim()
     }
 
-    // Keyword ক্লিন → এক-শব্দ → padding করে EXACT count করা
-    let keywordTokens = autoCleanKeywords(
+    // Bulk + Gemini keywords মিলিয়ে final keywords বানানো
+    const keywords = buildKeywords(
       rawKeywords,
-      autoRemoveDupKeywords,
       bulkKeywordEnabled ? bulkKeywordText : '',
+      autoRemoveDupKeywords,
+      keywordsCount,
     )
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean)
-
-    const targetCount = keywordsCount
-
-    if (keywordTokens.length < targetCount) {
-      const fillerPool = [
-        'vector',
-        'illustration',
-        'design',
-        'art',
-        'graphic',
-        'symbol',
-        'icon',
-        'minimal',
-        'modern',
-        'abstract',
-        'background',
-        'template',
-        'creative',
-        'digital',
-        'silhouette',
-        'pattern',
-        'shape',
-        'line',
-        'curve',
-        'poster',
-        'print',
-        'stock',
-        'commercial',
-        'concept',
-      ]
-
-      for (const word of fillerPool) {
-        if (keywordTokens.length >= targetCount) break
-        if (!keywordTokens.includes(word)) {
-          keywordTokens.push(word)
-        }
-      }
-    }
-
-    keywordTokens = keywordTokens.slice(0, targetCount)
-    const keywords = keywordTokens.join(', ')
 
     const description = rawDescription.slice(0, descriptionLength)
 
