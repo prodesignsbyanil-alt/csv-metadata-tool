@@ -770,9 +770,18 @@ No explanation. No markdown. No extra text. Only raw JSON.
               Logout
             </button>
           </div>
+
+          {/* Developed By box with photo */}
           <div className="topbar-developed-box">
-            <span className="developed-by-label">Developed By</span>
-            <span className="developed-by-name">Anil Chandra Barman</span>
+            <img
+              src="/anil-chandra-barman.jpg"
+              alt="Anil Chandra Barman"
+              className="developed-by-avatar"
+            />
+            <div className="developed-by-text">
+              <span className="developed-by-label">Developed By</span>
+              <span className="developed-by-name">Anil Chandra Barman</span>
+            </div>
           </div>
         </div>
       </header>
