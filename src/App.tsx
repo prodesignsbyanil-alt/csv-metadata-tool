@@ -252,9 +252,9 @@ const App: React.FC = () => {
   const [email, setEmail] = useState('')
   const [isLoggedIn, setIsLoggedIn] = useState(false)
 
-  // Gemini API key
-  const [apiKey, setApiKey] = useState('')
-  const [savedApiKey, setSavedApiKey] = useState('')
+  // Gemini API keys (multi)
+  const [apiKeysInput, setApiKeysInput] = useState('')
+  const [savedApiKeys, setSavedApiKeys] = useState<string[]>([])
 
   // Mode: Metadata / Prompt
   const [mode, setMode] = useState<Mode>('metadata')
@@ -286,18 +286,42 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<string[]>([])
   const [isGeneratingAll, setIsGeneratingAll] = useState(false)
 
-  // LocalStorage থেকে API key রিস্টোর
+  // LocalStorage থেকে API keys রিস্টোর
   useEffect(() => {
-    const storedKey = localStorage.getItem('csv_tool_api_key') || ''
-    setApiKey(storedKey)
-    setSavedApiKey(storedKey)
+    const storedMulti = localStorage.getItem('csv_tool_api_keys')
+    if (storedMulti) {
+      try {
+        const parsed = JSON.parse(storedMulti)
+        if (Array.isArray(parsed)) {
+          setSavedApiKeys(parsed)
+          setApiKeysInput(parsed.join('\n'))
+          return
+        }
+      } catch {
+        // ignore
+      }
+    }
+    // পুরনো single key থাকলে migrate
+    const oldSingle = localStorage.getItem('csv_tool_api_key') || ''
+    if (oldSingle) {
+      setSavedApiKeys([oldSingle])
+      setApiKeysInput(oldSingle)
+      localStorage.setItem('csv_tool_api_keys', JSON.stringify([oldSingle]))
+    }
   }, [])
 
   const handleSaveApiKey = () => {
-    const trimmed = apiKey.trim()
-    localStorage.setItem('csv_tool_api_key', trimmed)
-    setSavedApiKey(trimmed)
-    addHistory('Gemini API key saved.')
+    const parts = apiKeysInput
+      .split(/[\n,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+
+    const unique = Array.from(new Set(parts)).slice(0, 5)
+
+    localStorage.setItem('csv_tool_api_keys', JSON.stringify(unique))
+    setSavedApiKeys(unique)
+
+    addHistory(`${unique.length} Gemini API key(s) saved.`)
   }
 
   const addHistory = (msg: string) => {
@@ -417,17 +441,14 @@ const App: React.FC = () => {
     }
   }
 
-  // ✅ Gemini 2.0 Flash + raster image vision + SVG→PNG + keyword padding
-  const generateMetadataWithGemini = async (
+  // একেকটা key দিয়ে Gemini কল করার helper
+  const callGeminiWithKey = async (
     item: FileItem,
+    key: string,
   ): Promise<Partial<FileItem>> => {
-    if (!savedApiKey) {
-      return generateDemoMetadata(item, 0)
-    }
-
     const apiUrl =
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' +
-      encodeURIComponent(savedApiKey)
+      encodeURIComponent(key)
 
     const prompt = `
 You are an expert stock content metadata generator for stock websites like Adobe Stock, Shutterstock, Freepik, Vecteezy.
@@ -486,7 +507,6 @@ No explanation. No markdown. No extra text. Only raw JSON.
         },
       })
 
-      // সাথে ছোট SVG source snippet টেক্সট আকারে দেই (ঐচ্ছিক, extra hint)
       const svgText = await fileToText(item.file)
       const truncated = svgText.slice(0, 3000)
       parts.push({
@@ -523,7 +543,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
     const data = await response.json()
 
     // Gemini → text extract
-    let rawText: string = ''
+    let rawText = ''
 
     if (
       data &&
@@ -597,6 +617,38 @@ No explanation. No markdown. No extra text. Only raw JSON.
     }
   }
 
+  // ✅ একাধিক key ব্যবহার করে Gemini কল
+  const generateMetadataWithGemini = async (
+    item: FileItem,
+  ): Promise<Partial<FileItem>> => {
+    if (!savedApiKeys.length) {
+      return generateDemoMetadata(item, 0)
+    }
+
+    let lastError: any = null
+
+    for (const key of savedApiKeys) {
+      try {
+        return await callGeminiWithKey(item, key)
+      } catch (err) {
+        lastError = err
+        console.error('Gemini key failed:', err)
+        addHistory(
+          `Gemini key failed: ${
+            err && (err as any).message ? (err as any).message : 'Unknown error'
+          }`,
+        )
+      }
+    }
+
+    // সব key ফেইল করলে demo তে fallback করি
+    addHistory('All Gemini keys failed. Falling back to demo generator.')
+    if (lastError) {
+      console.error('All Gemini errors, last:', lastError)
+    }
+    return generateDemoMetadata(item, 0)
+  }
+
   // প্রতিটি ফাইলের জন্য জেনারেশন
   const generateForItem = async (id: string, index: number) => {
     setFiles((prev) =>
@@ -609,7 +661,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
 
       let partial: Partial<FileItem>
 
-      if (!savedApiKey) {
+      if (!savedApiKeys.length) {
         partial = await generateDemoMetadata(current, index)
       } else {
         partial = await generateMetadataWithGemini(current)
@@ -634,7 +686,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
   }
 
   const handleGenerateAll = async () => {
-    if (!savedApiKey) {
+    if (!savedApiKeys.length) {
       if (
         !window.confirm(
           'No Gemini API key saved. Do you still want to generate using demo logic only?',
@@ -771,7 +823,8 @@ No explanation. No markdown. No extra text. Only raw JSON.
             </button>
           </div>
 
-          {/* Developed By box with photo */}
+          {/* আপনার Developed By avatar ব্লক এখানে রাখবেন */}
+          {/* উদাহরণ (যদি এখনো না থাকে):
           <div className="topbar-developed-box">
             <img
               src="/anil-chandra-barman.jpg"
@@ -783,6 +836,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
               <span className="developed-by-name">Anil Chandra Barman</span>
             </div>
           </div>
+          */}
         </div>
       </header>
 
@@ -795,12 +849,11 @@ No explanation. No markdown. No extra text. Only raw JSON.
             <div className="card-row">
               <h2 className="card-title">Generation Controls</h2>
               <div className="api-row">
-                <input
-                  type="password"
-                  placeholder="Enter Gemini API key"
-                  className="text-input full"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                <textarea
+                  className="text-area"
+                  placeholder="Enter up to 5 Gemini API keys (one per line or separated by comma)"
+                  value={apiKeysInput}
+                  onChange={(e) => setApiKeysInput(e.target.value)}
                 />
                 <button className="primary-btn" onClick={handleSaveApiKey}>
                   Save
