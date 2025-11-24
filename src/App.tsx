@@ -571,7 +571,7 @@ No explanation. No markdown. No extra text. Only raw JSON.
     }
   }
 
-  // ✅ একাধিক key ব্যবহার করে Gemini কল (demo fallback বাদ)
+  // ✅ একাধিক key ব্যবহার করে Gemini কল
   const generateMetadataWithGemini = async (
     item: FileItem,
   ): Promise<Partial<FileItem>> => {
@@ -762,7 +762,21 @@ No explanation. No markdown. No extra text. Only raw JSON.
             </button>
           </div>
 
-          {/* এখানে আগের মত আপনার avatar ব্লক থাকলে রাখুন */}
+          {/* Avatar + Developed By */}
+          <div className="topbar-developed-box">
+            <div className="developer-avatar-wrapper">
+              {/* public/anil-chandra-barman.jpg */}
+              <img
+                src="/anil-chandra-barman.jpg"
+                alt="Anil Chandra Barman"
+                className="developer-avatar"
+              />
+            </div>
+            <div className="developer-text">
+              <span className="developed-by-label">Developed By</span>
+              <span className="developed-by-name">Anil Chandra Barman</span>
+            </div>
+          </div>
         </div>
       </header>
 
