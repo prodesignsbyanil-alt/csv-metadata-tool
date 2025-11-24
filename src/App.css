@@ -213,6 +213,15 @@
 .small-btn:hover {
   background: #0f172a;
 }
+/* Stop অবস্থায় Generate বাটনের জন্য */
+.danger-btn {
+  background: #dc2626;
+  color: #f9fafb;
+}
+
+.danger-btn:hover {
+  background: #b91c1c;
+}
 
 /* Toggles & pills */
 
